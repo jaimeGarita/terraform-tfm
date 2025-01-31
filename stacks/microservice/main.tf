@@ -47,7 +47,8 @@ resource "aws_iam_policy" "codepipeline_permissions" {
         Action   = [
           "codepipeline:PollForJobs",
           "codepipeline:PutJobFailureResult",
-          "codepipeline:PutJobSuccessResult"
+          "codepipeline:PutJobSuccessResult",
+          "ecr:*"
         ]
         Effect   = "Allow"
         Resource = "*"
@@ -84,6 +85,7 @@ resource "aws_iam_policy" "codepipeline_permissions" {
 }
 
 resource "aws_iam_policy" "codebuild_permissions" {
+
   name        = "CodeBuildPermissions"
   description = "Permissions for CodeBuild to interact with other AWS services"
 
@@ -148,7 +150,7 @@ resource "aws_codebuild_project" "simple_docker_service_build" {
     image                       = "aws/codebuild/standard:5.0"
     type                        = "LINUX_CONTAINER"
     image_pull_credentials_type = "CODEBUILD"
-
+  
     environment_variable {
       name  = "REPOSITORY_URI"
       value = "195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service"
@@ -194,7 +196,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"           # Propietario del repositorio
         "Repo"       = "api-tfm"               # Nombre del repositorio
         "Branch"     = "main"                  # Rama a monitorear
-        "OAuthToken" = "TOKEN_DE_ACCESO"    # Reemplaza con tu PAT de GitHub
+        "OAuthToken" = "API_KEY"    # Reemplaza con tu PAT de GitHub
       }
       input_artifacts  = []
       name             = "GitHub_Source"
