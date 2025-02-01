@@ -1,3 +1,11 @@
+variable "aws_account_id" {
+  description = "ID de la cuenta AWS donde se desplegará la infraestructura"
+  type        = string
+}
+
+provider "aws" {
+  region = "us-west-2"
+}
 resource "aws_ecr_repository" "simple_docker_service" {
   name = "simple-docker-service"  # Nombre del repositorio en ECR
 
@@ -65,10 +73,17 @@ resource "aws_iam_policy" "codepipeline_permissions" {
       {
         Action   = [
           "s3:GetObject",
-          "s3:PutObject"
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:GetBucketVersioning",
+          "s3:ListBucket",
+          "s3:ListBucketVersions"
         ]
         Effect   = "Allow"
-        Resource = "arn:aws:s3:::codepipelinestartertempla-codepipelineartifactsbuc-ceeedyolaysk/*"
+        Resource = [
+          "${aws_s3_bucket.artifact_store.arn}",
+          "${aws_s3_bucket.artifact_store.arn}/*"
+        ]
       },
       {
         Action   = [
@@ -78,7 +93,7 @@ resource "aws_iam_policy" "codepipeline_permissions" {
           "codestar-connections:PassConnection"
         ]
         Effect   = "Allow"
-        Resource = "arn:aws:codestar-connections:us-west-2:195275638124:connection/*"
+        Resource = "arn:aws:codestar-connections:us-west-2:${var.aws_account_id}:connection/*"
       }
     ]
   })
@@ -108,7 +123,10 @@ resource "aws_iam_policy" "codebuild_permissions" {
           "s3:ListBucket"
         ]
         Effect   = "Allow"
-        Resource = "arn:aws:s3:::codepipelinestartertempla-codepipelineartifactsbuc-ceeedyolaysk/*"
+        Resource = [
+          "${aws_s3_bucket.artifact_store.arn}",
+          "${aws_s3_bucket.artifact_store.arn}/*"
+        ]
       },
       {
         Action = [
@@ -153,7 +171,7 @@ resource "aws_codebuild_project" "simple_docker_service_build" {
   
     environment_variable {
       name  = "REPOSITORY_URI"
-      value = "195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service"
+      value = "${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service"
     }
   }
 
@@ -183,7 +201,7 @@ resource "aws_codepipeline" "my_pipeline" {
   tags_all       = {}
 
   artifact_store {
-    location = "codepipelinestartertempla-codepipelineartifactsbuc-ceeedyolaysk"
+    location = aws_s3_bucket.artifact_store.bucket
     type     = "S3"
   }
 
@@ -196,7 +214,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"           # Propietario del repositorio
         "Repo"       = "api-tfm"               # Nombre del repositorio
         "Branch"     = "main"                  # Rama a monitorear
-        "OAuthToken" = "ACCESS TOKEN"    # Reemplaza con tu PAT de GitHub
+        "OAuthToken" = "SECRET_GITHUB_TOKEN"    # Reemplaza con tu PAT de GitHub
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -273,11 +291,43 @@ resource "aws_iam_instance_profile" "ec2_ecr_profile" {
   role = aws_iam_role.ec2_ecr_role.name
 }
 
+resource "aws_security_group" "allow_ssh_http" {
+  name        = "allow_ssh_http"
+  description = "Allows SSH and HTTP traffic"
+
+  ingress {
+    description = "SSH desde cualquier lugar"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP desde cualquier lugar"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "allow_ssh_http"
+  }
+}
 
 resource "aws_instance" "ec2_instance" {
-  ami                  = "ami-0a897ba00eaed7398"
-  instance_type        = "t2.micro"
-  iam_instance_profile = aws_iam_instance_profile.ec2_ecr_profile.name  # Asignar el perfil de IAM
+  ami                    = "ami-0a897ba00eaed7398"
+  instance_type          = "t2.micro"
+  iam_instance_profile   = aws_iam_instance_profile.ec2_ecr_profile.name
+  vpc_security_group_ids = [aws_security_group.allow_ssh_http.id]
 
   user_data = <<-EOF
               #!/bin/bash
@@ -286,10 +336,10 @@ resource "aws_instance" "ec2_instance" {
               service docker start
               usermod -a -G docker ec2-user
 
-              aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 195275638124.dkr.ecr.us-west-2.amazonaws.com
+              aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com
 
-              docker pull 195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
-              docker run -d -p 80:5000 195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
+              docker pull ${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
+              docker run -d -p 80:5000 ${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
               EOF
 
   tags = {
@@ -300,3 +350,16 @@ resource "aws_instance" "ec2_instance" {
 output "ec2_public_ip" {
   value = aws_instance.ec2_instance.public_ip
 }
+
+resource "aws_s3_bucket" "artifact_store" {
+  bucket        = "codepipeline-artifacts-${var.aws_account_id}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "artifact_store_versioning" {
+  bucket = aws_s3_bucket.artifact_store.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
