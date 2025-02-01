@@ -196,7 +196,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"           # Propietario del repositorio
         "Repo"       = "api-tfm"               # Nombre del repositorio
         "Branch"     = "main"                  # Rama a monitorear
-        "OAuthToken" = "API_KEY"    # Reemplaza con tu PAT de GitHub
+        "OAuthToken" = "ACCESS TOKEN"    # Reemplaza con tu PAT de GitHub
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -226,4 +226,77 @@ resource "aws_codepipeline" "my_pipeline" {
       version          = "1"
     }
   }
+}
+
+resource "aws_iam_role" "ec2_ecr_role" {
+  name = "EC2ECRRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "ec2_ecr_policy" {
+  name        = "EC2ECRPolicy"
+  description = "Policy to allow EC2 to pull images from ECR"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ecr:*"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "attach_ec2_ecr_policy" {
+  policy_arn = aws_iam_policy.ec2_ecr_policy.arn
+  role       = aws_iam_role.ec2_ecr_role.name
+}
+
+resource "aws_iam_instance_profile" "ec2_ecr_profile" {
+  name = "EC2ECRProfile"
+  role = aws_iam_role.ec2_ecr_role.name
+}
+
+
+resource "aws_instance" "ec2_instance" {
+  ami                  = "ami-0a897ba00eaed7398"
+  instance_type        = "t2.micro"
+  iam_instance_profile = aws_iam_instance_profile.ec2_ecr_profile.name  # Asignar el perfil de IAM
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y docker
+              service docker start
+              usermod -a -G docker ec2-user
+
+              aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 195275638124.dkr.ecr.us-west-2.amazonaws.com
+
+              docker pull 195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
+              docker run -d -p 80:5000 195275638124.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service:latest
+              EOF
+
+  tags = {
+    Name = "SimpleDockerServiceInstance"
+  }
+}
+
+output "ec2_public_ip" {
+  value = aws_instance.ec2_instance.public_ip
 }
