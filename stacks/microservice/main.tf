@@ -91,7 +91,6 @@ resource "aws_iam_policy" "codepipeline_permissions" {
 }
 
 resource "aws_iam_policy" "codebuild_permissions" {
-
   name        = "CodeBuildPermissions"
   description = "Permissions for CodeBuild to interact with other AWS services"
 
@@ -131,6 +130,21 @@ resource "aws_iam_policy" "codebuild_permissions" {
         ]
         Effect   = "Allow"
         Resource = "*"
+      },
+      {
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
+      },
+      {
+        Action = [
+          "ec2:DescribeInstances"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
       }
     ]
   })
@@ -164,6 +178,11 @@ resource "aws_codebuild_project" "simple_docker_service_build" {
       name  = "REPOSITORY_URI"
       value = "${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com/simple-docker-service"
     }
+
+    environment_variable {
+      name  = "EC2_IP"
+      value = aws_instance.ec2_instance.public_ip
+    }
   }
 
   source {
@@ -171,9 +190,33 @@ resource "aws_codebuild_project" "simple_docker_service_build" {
     location        = "https://github.com/jaimeGarita/api-tfm.git"
     git_clone_depth = 1
 
-    git_submodules_config {
-      fetch_submodules = true
-    }
+    buildspec = <<-EOF
+      version: 0.2
+      phases:
+        pre_build:
+          commands:
+            - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin $REPOSITORY_URI
+        build:
+          commands:
+            - docker build -t $REPOSITORY_URI:latest .
+        post_build:
+          commands:
+            - docker push $REPOSITORY_URI:latest
+            - echo "Deploying to EC2..."
+            - |
+              aws ssm send-command \
+                --region us-west-2 \
+                --instance-ids ${aws_instance.ec2_instance.id} \
+                --document-name "AWS-RunShellScript" \
+                --comment "Deploy latest docker image" \
+                --parameters commands=['
+                  "aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin '$REPOSITORY_URI'",
+                  "docker pull '$REPOSITORY_URI':latest",
+                  "docker stop app || true",
+                  "docker rm app || true",
+                  "docker run -d --name app -p 5000:5000 '$REPOSITORY_URI':latest"
+                ']
+      EOF
   }
 
   source_version = "main"
@@ -226,30 +269,10 @@ resource "aws_codepipeline" "my_pipeline" {
         "ProjectName" = aws_codebuild_project.simple_docker_service_build.name
       }
       input_artifacts  = ["SourceOutput"]
-      name             = "Docker_Build_Tag_and_Push"
+      name             = "Build_and_Deploy_to_EC2"
       output_artifacts = ["BuildOutput"]
       owner            = "AWS"
       provider         = "CodeBuild"
-      role_arn         = aws_iam_role.new_codepipeline_role.arn
-      run_order        = 1
-      version          = "1"
-    }
-  }
-
-  # Nueva etapa de despliegue con CodeDeploy
-  stage {
-    name = "Deploy"
-
-    action {
-      category = "Deploy"
-      configuration = {
-        "ApplicationName"     = aws_codedeploy_app.simple_docker_service.name
-        "DeploymentGroupName" = aws_codedeploy_deployment_group.simple_docker_service.deployment_group_name
-      }
-      input_artifacts  = ["BuildOutput"]
-      name             = "DeployToEC2"
-      owner            = "AWS"
-      provider         = "CodeDeploy"
       run_order        = 1
       version          = "1"
     }
@@ -275,14 +298,30 @@ resource "aws_iam_role" "ec2_ecr_role" {
 
 resource "aws_iam_policy" "ec2_ecr_policy" {
   name        = "EC2ECRPolicy"
-  description = "Policy to allow EC2 to pull images from ECR"
+  description = "Policy to allow EC2 to pull images from ECR and receive SSM commands"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Action = [
-          "ecr:*"
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+      {
+        Action = [
+          "ssm:UpdateInstanceInformation",
+          "ssm:UpdateInstanceStatus",
+          "ssm:GetDocument",
+          "ssm:SendConfigurationInventory",
+          "ssm:ListInstanceAssociations",
+          "ssm:DescribeAssociation",
+          "ssm:GetParameters"
         ]
         Effect   = "Allow"
         Resource = "*"
@@ -346,17 +385,13 @@ resource "aws_instance" "ec2_instance" {
               service docker start
               usermod -a -G docker ec2-user
 
-              # Instalar el agente de CodeDeploy
-              yum install -y ruby
-              wget https://aws-codedeploy-us-west-2.s3.us-west-2.amazonaws.com/latest/install
-              chmod +x ./install
-              ./install auto
+              # Instalar el agente de SSM
+              yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+              systemctl enable amazon-ssm-agent
+              systemctl start amazon-ssm-agent
 
               # Configurar Docker para usar ECR
               aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com
-
-              # Iniciar el servicio de CodeDeploy
-              service codedeploy-agent start
               EOF
 
   tags = {
@@ -461,4 +496,10 @@ resource "aws_iam_policy" "codedeploy_additional_permissions" {
 resource "aws_iam_role_policy_attachment" "codedeploy_additional_policy" {
   policy_arn = aws_iam_policy.codedeploy_additional_permissions.arn
   role       = aws_iam_role.codedeploy_role.name
+}
+
+# Adjuntar la política AWSSystemsManagerManagedInstanceCore al rol de EC2
+resource "aws_iam_role_policy_attachment" "ec2_ssm_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  role       = aws_iam_role.ec2_ecr_role.name
 }
