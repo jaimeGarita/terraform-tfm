@@ -435,6 +435,19 @@ resource "aws_s3_bucket_versioning" "artifact_store_versioning" {
   }
 }
 
+# Bucket para el datalake (actualizado para usar el nombre existente)
+resource "aws_s3_bucket" "datalake_raw_s3" {
+  bucket        = "datalake-raw-s3-${var.aws_account_id}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "datalake_raw_s3_versioning" {
+  bucket = aws_s3_bucket.datalake_raw_s3.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 # Crear una aplicación de CodeDeploy
 resource "aws_codedeploy_app" "simple_docker_service" {
   compute_platform = "Server"
@@ -600,4 +613,99 @@ resource "aws_iam_role_policy_attachment" "attach_rds_policy" {
 
 output "rds_endpoint" {
   value = aws_rds_cluster.aurora_cluster.endpoint
+}
+
+module "dms" {
+  source = "../../modules/dms"
+  
+  region                    = "us-west-2"
+  region_alias              = "usw2"
+  environment               = "prod"
+  business_unit             = "microservice"
+  account_id                = var.aws_account_id
+}
+
+resource "aws_secretsmanager_secret" "rds_credentials_db" {
+  name = "rds-credentials-db"
+  description = "Credenciales para la base de datos Aurora PostgreSQL"
+}
+
+resource "aws_secretsmanager_secret_version" "rds_credentials_db" {
+  secret_id = aws_secretsmanager_secret.rds_credentials_db.id
+  secret_string = jsonencode({
+    username = aws_rds_cluster.aurora_cluster.master_username
+    password = aws_rds_cluster.aurora_cluster.master_password
+    engine   = "postgres"
+    host     = aws_rds_cluster.aurora_cluster.endpoint
+    port     = 5432
+    dbname   = aws_rds_cluster.aurora_cluster.database_name
+  })
+}
+
+module "rds_to_datalake" {
+  source = "../../modules/rds_to_datalake"
+  
+  region                    = "us-west-2"
+  region_alias              = "usw2"
+  environment               = "prod"
+  service                   = "microservice"
+  business_unit             = "microservice"
+  account_id                = var.aws_account_id
+  
+  # RDS Configuration
+  cluster                   = aws_rds_cluster.aurora_cluster.cluster_identifier
+  database_name             = aws_rds_cluster.aurora_cluster.database_name
+  
+  # Secrets Manager ARN para las credenciales de RDS
+  secrets_manager_arn       = aws_secretsmanager_secret.rds_credentials_db.arn
+  
+  # DMS Instance ARN
+  replication_instance_arn  = module.dms.replication_instance_arn
+  
+  # Tags y compliance
+  compliance               = "none"
+}
+
+# Rol DMS para infraestructura (actualizado para coincidir con el nombre esperado)
+resource "aws_iam_role" "dms_infrastructure_role" {
+  name = "usw2-prod-infrastructure-dms-role"  # Nombre exacto que espera el endpoint
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = [
+            "dms.amazonaws.com",
+            "dms.us-west-2.amazonaws.com",  # Servicio regional para us-west-2
+            "dms.us-east-1.amazonaws.com"   # Servicio regional para us-east-1
+          ]
+        }
+      }
+    ]
+  })
+}
+
+# Política para el rol DMS
+resource "aws_iam_role_policy" "dms_infrastructure_policy" {
+  name = "dms-infrastructure-policy"
+  role = aws_iam_role.dms_infrastructure_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:*",
+          "s3:*",
+          "secretsmanager:*",
+          "kinesis:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
