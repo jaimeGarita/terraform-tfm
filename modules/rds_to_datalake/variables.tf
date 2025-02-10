@@ -62,13 +62,8 @@ variable "tags" {
   default = {}
 }
 
-variable "vpc_id" {
-  description = "ID of the VPC where the RDS instance will be created"
-  type        = string
-}
-
 provider "aws" {
-  region = "us-east-1"
+  region = "us-west-2"
   default_tags {
     tags = {
       Application  = var.service

@@ -1,5 +1,5 @@
 locals {
-  s3_destiny_bucket = "arn:aws:s3:::use1-${var.environment}-infrastructure-datalake-raw-s3"
+  s3_destiny_bucket = "arn:aws:s3:::datalake-raw-s3-${var.account_id}"
 }
 
 resource "aws_kinesis_stream" "kinesis-endpoint" {
