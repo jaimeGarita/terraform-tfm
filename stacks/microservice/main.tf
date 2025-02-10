@@ -141,7 +141,7 @@ resource "aws_iam_policy" "codebuild_permissions" {
       },
       {
         Action = [
-          "ec2:DescribeInstances"
+          "ec2:*"
         ],
         Effect   = "Allow",
         Resource = "*"
@@ -195,13 +195,26 @@ resource "aws_codebuild_project" "simple_docker_service_build" {
       phases:
         pre_build:
           commands:
-            - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin $REPOSITORY_URI
+            - echo "Configurando AWS CLI..."
+            - aws --version
+            - echo "Intentando autenticación con ECR..."
+            - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${var.aws_account_id}.dkr.ecr.us-west-2.amazonaws.com
+            - echo "Verificando REPOSITORY_URI..."
+            - echo $REPOSITORY_URI
         build:
           commands:
+            - echo "Building Docker image..."
             - docker build -t $REPOSITORY_URI:latest .
         post_build:
           commands:
+            - echo "Pushing Docker image..."
             - docker push $REPOSITORY_URI:latest
+            - echo "Esperando que la instancia EC2 esté lista..."
+            - |
+              until aws ec2 describe-instance-status --instance-ids ${aws_instance.ec2_instance.id} --query 'InstanceStatuses[0].SystemStatus.Status' --output text | grep -q "ok"; do
+                sleep 10
+                echo "Esperando que el sistema esté listo..."
+              done
             - echo "Deploying to EC2..."
             - |
               aws ssm send-command \
@@ -248,7 +261,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"
         "Repo"       = "api-tfm"
         "Branch"     = "main"
-        "OAuthToken" = "SECRET AUTH TOKEN"
+        "OAuthToken" = "TOKEN GITHUB"
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -356,6 +369,14 @@ resource "aws_security_group" "allow_ssh_http" {
     description = "HTTP desde cualquier lugar"
     from_port   = 80
     to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+    ingress {
+    description = "Puerto 5000 para el microservicio"
+    from_port   = 5000
+    to_port     = 5000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
