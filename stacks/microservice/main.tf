@@ -141,7 +141,7 @@ resource "aws_iam_policy" "codebuild_permissions" {
       },
       {
         Action = [
-          "ec2:*"
+          "ec2:*",
         ],
         Effect   = "Allow",
         Resource = "*"
@@ -523,4 +523,81 @@ resource "aws_iam_role_policy_attachment" "codedeploy_additional_policy" {
 resource "aws_iam_role_policy_attachment" "ec2_ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.ec2_ecr_role.name
+}
+
+resource "aws_security_group" "rds_sg" {
+  name        = "rds-security-group"
+  description = "Grupo de seguridad para RDS Aurora"
+
+  ingress {
+    description     = "PostgreSQL desde EC2"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.allow_ssh_http.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "rds-aurora-sg"
+  }
+}
+
+resource "aws_rds_cluster" "aurora_cluster" {
+  cluster_identifier     = "aurora-cluster-demo"
+  engine                = "aurora-postgresql"
+  engine_version        = "15.3"
+  database_name         = "demodb"
+  master_username       = "demouser"
+  master_password       = "Demo1234!"
+  skip_final_snapshot   = true
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+
+  serverlessv2_scaling_configuration {
+    min_capacity = 0.5
+    max_capacity = 1.0
+  }
+}
+
+resource "aws_rds_cluster_instance" "aurora_instance" {
+  cluster_identifier = aws_rds_cluster.aurora_cluster.id
+  instance_class    = "db.serverless"
+  engine            = aws_rds_cluster.aurora_cluster.engine
+  engine_version    = aws_rds_cluster.aurora_cluster.engine_version
+}
+
+# Agregar política para acceso a RDS
+resource "aws_iam_policy" "ec2_rds_policy" {
+  name        = "EC2RDSPolicy"
+  description = "Política para permitir que EC2 acceda a RDS"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "rds-db:connect",
+          "rds:DescribeDBClusters",
+          "rds:DescribeDBInstances"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "attach_rds_policy" {
+  policy_arn = aws_iam_policy.ec2_rds_policy.arn
+  role       = aws_iam_role.ec2_ecr_role.name
+}
+
+output "rds_endpoint" {
+  value = aws_rds_cluster.aurora_cluster.endpoint
 }
