@@ -226,7 +226,7 @@ resource "aws_iam_policy" "kinesis_dms_bu" {
         "Resource" : [
           "arn:aws:kms:*:${local.account_id}:key/*",
           "arn:aws:kinesis:*:${local.account_id}:*/*/consumer/*:*",
-          "arn:aws:kinesis:us-east-1:${local.account_id}:stream/*"
+          "arn:aws:kinesis:${local.region}:${local.account_id}:stream/*"
         ]
       },
       {
@@ -241,8 +241,8 @@ resource "aws_iam_policy" "kinesis_dms_bu" {
         ],
         "Effect" : "Allow",
         "Resource" : [
-          "arn:aws:s3:::use1-infra-infrastructure-datalake-s3",
-          "arn:aws:s3:::use1-infra-infrastructure-datalake-s3/*"
+          "arn:aws:s3:::datalake-raw-s3-${local.account_id}",
+          "arn:aws:s3:::datalake-raw-s3-${local.account_id}/*"
         ]
       },
     ]
@@ -288,7 +288,7 @@ resource "aws_iam_policy" "secrets_manager_read_only" {
         ],
         "Effect" : "Allow",
         "Resource" : [
-          "arn:aws:secretsmanager:us-east-1:248666061168:secret:kubernetes/*-credentials-*"
+          "arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:kubernetes/*-credentials-*"
         ]
       }
     ],
@@ -372,3 +372,8 @@ resource "aws_iam_role_policy_attachment" "dms_vpc_access" {
 #   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role"
 #   role       = "EMR_EC2_DefaultRole"
 # }
+
+output "dms_security_group_id" {
+  description = "ID del security group de DMS"
+  value       = aws_security_group.dms_instance_sg.id
+}

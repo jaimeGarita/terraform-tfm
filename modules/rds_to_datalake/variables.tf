@@ -62,8 +62,14 @@ variable "tags" {
   default = {}
 }
 
+variable "cluster_endpoint" {
+  description = "The endpoint hostname of the RDS cluster"
+  type        = string
+}
+
 provider "aws" {
   region = "us-west-2"
+  alias  = "us-west-2"
   default_tags {
     tags = {
       Application  = var.service

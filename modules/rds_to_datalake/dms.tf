@@ -7,9 +7,9 @@ resource "aws_dms_endpoint" "source-dms-endpoint" {
   database_name = var.database_name
   username      = "demouser"           # El mismo usuario que configuramos en el cluster Aurora
   password      = "Demo1234!"          # La misma contraseña que configuramos en el cluster Aurora
-  server_name   = var.cluster          # Usamos el identificador del cluster Aurora
+  server_name   = var.cluster_endpoint  # Cambiamos var.cluster por var.cluster_endpoint
   port          = 5432                 # Puerto estándar de PostgreSQL
-  ssl_mode      = "none"               # Deshabilitamos SSL para simplificar
+  ssl_mode      = "none"         # Habilitar SSL para mayor seguridad
 }
 
 resource "aws_dms_endpoint" "target-dms-endpoint" {

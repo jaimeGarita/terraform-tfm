@@ -261,7 +261,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"
         "Repo"       = "api-tfm"
         "Branch"     = "main"
-        "OAuthToken" = "TOKEN GITHUB"
+        "OAuthToken" = ""
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -550,6 +550,14 @@ resource "aws_security_group" "rds_sg" {
     security_groups = [aws_security_group.allow_ssh_http.id]
   }
 
+  ingress {
+    description     = "PostgreSQL desde DMS"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [module.dms.dms_security_group_id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -623,11 +631,13 @@ module "dms" {
   environment               = "prod"
   business_unit             = "microservice"
   account_id                = var.aws_account_id
+  
 }
 
-resource "aws_secretsmanager_secret" "rds_credentials_db" {
-  name = "rds-credentials-db"
+/* resource "aws_secretsmanager_secret" "rds_credentials_db" {
+  name = "rds-credentials-db-1"
   description = "Credenciales para la base de datos Aurora PostgreSQL"
+  force_overwrite_replica_secret = true
 }
 
 resource "aws_secretsmanager_secret_version" "rds_credentials_db" {
@@ -640,7 +650,7 @@ resource "aws_secretsmanager_secret_version" "rds_credentials_db" {
     port     = 5432
     dbname   = aws_rds_cluster.aurora_cluster.database_name
   })
-}
+} */
 
 module "rds_to_datalake" {
   source = "../../modules/rds_to_datalake"
@@ -654,10 +664,11 @@ module "rds_to_datalake" {
   
   # RDS Configuration
   cluster                   = aws_rds_cluster.aurora_cluster.cluster_identifier
+  cluster_endpoint          = aws_rds_cluster.aurora_cluster.endpoint
   database_name             = aws_rds_cluster.aurora_cluster.database_name
   
   # Secrets Manager ARN para las credenciales de RDS
-  secrets_manager_arn       = aws_secretsmanager_secret.rds_credentials_db.arn
+  secrets_manager_arn       ="arn-temp" #aws_secretsmanager_secret.rds_credentials_db.arn
   
   # DMS Instance ARN
   replication_instance_arn  = module.dms.replication_instance_arn
@@ -705,6 +716,18 @@ resource "aws_iam_role_policy" "dms_infrastructure_policy" {
           "kinesis:*"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kinesis:DescribeStream",
+          "kinesis:GetShardIterator",
+          "kinesis:GetRecords",
+          "kinesis:ListShards",
+          "kinesis:PutRecord",
+          "kinesis:PutRecords"
+        ],
+        Resource = module.rds_to_datalake.kinesis-stream-arn  # Referencia específica al ARN del stream
       }
     ]
   })
