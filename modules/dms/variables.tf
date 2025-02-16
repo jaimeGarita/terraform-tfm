@@ -6,23 +6,22 @@
 # }
 
 variable "region" {
+  description = "AWS region"
   type        = string
-  description = "Full name of the region"
 }
 
 variable "region_alias" {
-  description = "Short name for the AWS region"
+  description = "Alias for the AWS region"
   type        = string
-  default     = "use1"
 }
 
 variable "environment" {
-  description = "Name of the environment"
+  description = "Environment name"
   type        = string
 }
 
 variable "business_unit" {
-  description = "Name of the business unit"
+  description = "Business unit name"
   type        = string
 }
 

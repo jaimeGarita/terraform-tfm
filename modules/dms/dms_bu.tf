@@ -13,16 +13,23 @@ data "aws_vpc" "default" {
   default = true
 }
 
-data "aws_subnets" "all" {
+# Obtener todas las subnets por defecto
+data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
+
+  filter {
+    name   = "availability-zone"
+    values = ["${var.region}a", "${var.region}b", "${var.region}c"]
+  }
 }
 
-# Asegurarnos de tener al menos 2 subnets
 locals {
-  subnet_ids = slice(data.aws_subnets.all.ids, 0, 2)
+  subnet_ids = data.aws_subnets.default.ids
+
+  validate_subnet_count = length(local.subnet_ids) >= 2 ? true : tobool("Se requieren al menos 2 subnets para el grupo de subnets de DMS")
 }
 
 ######### SG BEGIN #########
@@ -377,3 +384,23 @@ output "dms_security_group_id" {
   description = "ID del security group de DMS"
   value       = aws_security_group.dms_instance_sg.id
 }
+
+# # VPC Endpoint para Kinesis
+# resource "aws_vpc_endpoint" "kinesis" {
+#   vpc_id             = data.aws_vpc.default.id
+#   service_name       = "com.amazonaws.${var.region}.kinesis-streams"
+#   vpc_endpoint_type  = "Interface"
+  
+#   # Usar las subnets disponibles excluyendo us-west-2d
+#   subnet_ids = local.subnet_ids
+
+#   security_group_ids = [aws_security_group.dms_instance_sg.id]
+
+#   private_dns_enabled = true
+
+#   tags = {
+#     Name           = "${local.region_alias}-${local.environment}-${local.business_unit}-kinesis-endpoint"
+#     Environment    = local.environment
+#     BusinessUnit   = local.business_unit
+#   }
+# }
