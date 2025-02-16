@@ -5,7 +5,7 @@ locals {
 resource "aws_kinesis_stream" "kinesis-endpoint" {
   name             = "${var.region_alias}-${var.environment}-data-${var.service}-endpoint"
   retention_period = 24
-  shard_count      = 2
+  shard_count      = 1
 }
 
 resource "aws_kinesis_firehose_delivery_stream" "kinesis-firehose" {
@@ -16,7 +16,7 @@ resource "aws_kinesis_firehose_delivery_stream" "kinesis-firehose" {
   }
   extended_s3_configuration {
     bucket_arn          = local.s3_destiny_bucket
-    compression_format  = "HADOOP_SNAPPY"
+    compression_format  = "Snappy"
     prefix              = "firehose/rds/${var.cluster}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
     role_arn            = aws_iam_role.kinesis-firehose-delivery-iam-role.arn
     error_output_prefix = "firehose_error/rds/${var.cluster}/result=!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
