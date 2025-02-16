@@ -261,7 +261,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"
         "Repo"       = "api-tfm"
         "Branch"     = "main"
-        "OAuthToken" = ""
+        "OAuthToken" = "TOKEN"
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -393,9 +393,24 @@ resource "aws_security_group" "allow_ssh_http" {
   }
 }
 
+# Obtener la VPC default
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Obtener todas las subnets de la VPC default
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Actualizar la instancia EC2 para usar la primera subnet disponible
 resource "aws_instance" "ec2_instance" {
   ami                    = "ami-0a897ba00eaed7398"
   instance_type          = "t2.micro"
+  subnet_id              = tolist(data.aws_subnets.default.ids)[0]  # Usa la primera subnet
   iam_instance_profile   = aws_iam_instance_profile.ec2_ecr_profile.name
   vpc_security_group_ids = [aws_security_group.allow_ssh_http.id]
 
@@ -570,6 +585,7 @@ resource "aws_security_group" "rds_sg" {
   }
 }
 
+# Actualizar el cluster de Aurora
 resource "aws_rds_cluster" "aurora_cluster" {
   cluster_identifier     = "aurora-cluster-demo"
   engine                = "aurora-postgresql"
@@ -579,11 +595,16 @@ resource "aws_rds_cluster" "aurora_cluster" {
   master_password       = "Demo1234!"
   skip_final_snapshot   = true
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  db_subnet_group_name = aws_db_subnet_group.aurora.name
+  db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.demo_params.name
 
   serverlessv2_scaling_configuration {
     min_capacity = 0.5
     max_capacity = 1.0
   }
+
+  enable_http_endpoint = true
+  iam_database_authentication_enabled = true
 }
 
 resource "aws_rds_cluster_instance" "aurora_instance" {
@@ -593,34 +614,14 @@ resource "aws_rds_cluster_instance" "aurora_instance" {
   engine_version    = aws_rds_cluster.aurora_cluster.engine_version
 }
 
-# Agregar política para acceso a RDS
-resource "aws_iam_policy" "ec2_rds_policy" {
-  name        = "EC2RDSPolicy"
-  description = "Política para permitir que EC2 acceda a RDS"
+# Actualizar el subnet group de Aurora para usar todas las subnets disponibles
+resource "aws_db_subnet_group" "aurora" {
+  name       = "aurora-subnet-group"
+  subnet_ids = data.aws_subnets.default.ids
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = [
-          "rds-db:connect",
-          "rds:DescribeDBClusters",
-          "rds:DescribeDBInstances"
-        ]
-        Effect   = "Allow"
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "attach_rds_policy" {
-  policy_arn = aws_iam_policy.ec2_rds_policy.arn
-  role       = aws_iam_role.ec2_ecr_role.name
-}
-
-output "rds_endpoint" {
-  value = aws_rds_cluster.aurora_cluster.endpoint
+  tags = {
+    Name = "Aurora DB subnet group"
+  }
 }
 
 module "dms" {
@@ -732,3 +733,20 @@ resource "aws_iam_role_policy" "dms_infrastructure_policy" {
     ]
   })
 }
+
+resource "aws_rds_cluster_parameter_group" "demo_params" {
+  family      = "aurora-postgresql15"
+  name        = "demo-params"
+  description = "Parameter group for Aurora PostgreSQL cluster with logical replication enabled"
+
+  parameter {
+    name  = "rds.logical_replication"
+    value = "1"
+    apply_method = "pending-reboot"
+  }
+
+  tags = {
+    Name = "demo-params"
+  }
+}
+
