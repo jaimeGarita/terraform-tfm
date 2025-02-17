@@ -141,7 +141,7 @@ resource "aws_iam_policy" "codebuild_permissions" {
       },
       {
         Action = [
-          "ec2:*"
+          "ec2:*",
         ],
         Effect   = "Allow",
         Resource = "*"
@@ -261,7 +261,7 @@ resource "aws_codepipeline" "my_pipeline" {
         "Owner"      = "jaimeGarita"
         "Repo"       = "api-tfm"
         "Branch"     = "main"
-        "OAuthToken" = "TOKEN GITHUB"
+        "OAuthToken" = "TOKEN"
       }
       input_artifacts  = []
       name             = "GitHub_Source"
@@ -393,9 +393,24 @@ resource "aws_security_group" "allow_ssh_http" {
   }
 }
 
+# Obtener la VPC default
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Obtener todas las subnets de la VPC default
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Actualizar la instancia EC2 para usar la primera subnet disponible
 resource "aws_instance" "ec2_instance" {
   ami                    = "ami-0a897ba00eaed7398"
   instance_type          = "t2.micro"
+  subnet_id              = tolist(data.aws_subnets.default.ids)[0]  # Usa la primera subnet
   iam_instance_profile   = aws_iam_instance_profile.ec2_ecr_profile.name
   vpc_security_group_ids = [aws_security_group.allow_ssh_http.id]
 
@@ -430,6 +445,19 @@ resource "aws_s3_bucket" "artifact_store" {
 
 resource "aws_s3_bucket_versioning" "artifact_store_versioning" {
   bucket = aws_s3_bucket.artifact_store.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Bucket para el datalake (actualizado para usar el nombre existente)
+resource "aws_s3_bucket" "datalake_raw_s3" {
+  bucket        = "datalake-raw-s3-${var.aws_account_id}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "datalake_raw_s3_versioning" {
+  bucket = aws_s3_bucket.datalake_raw_s3.id
   versioning_configuration {
     status = "Enabled"
   }
@@ -524,3 +552,201 @@ resource "aws_iam_role_policy_attachment" "ec2_ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.ec2_ecr_role.name
 }
+
+resource "aws_security_group" "rds_sg" {
+  name        = "rds-security-group"
+  description = "Grupo de seguridad para RDS Aurora"
+
+  ingress {
+    description     = "PostgreSQL desde EC2"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.allow_ssh_http.id]
+  }
+
+  ingress {
+    description     = "PostgreSQL desde DMS"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [module.dms.dms_security_group_id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "rds-aurora-sg"
+  }
+}
+
+# Actualizar el cluster de Aurora
+resource "aws_rds_cluster" "aurora_cluster" {
+  cluster_identifier     = "aurora-cluster-demo"
+  engine                = "aurora-postgresql"
+  engine_version        = "15.3"
+  database_name         = "demodb"
+  master_username       = "demouser"
+  master_password       = "Demo1234!"
+  skip_final_snapshot   = true
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  db_subnet_group_name = aws_db_subnet_group.aurora.name
+  db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.demo_params.name
+
+  serverlessv2_scaling_configuration {
+    min_capacity = 0.5
+    max_capacity = 1.0
+  }
+
+  enable_http_endpoint = true
+  iam_database_authentication_enabled = true
+}
+
+resource "aws_rds_cluster_instance" "aurora_instance" {
+  cluster_identifier = aws_rds_cluster.aurora_cluster.id
+  instance_class    = "db.serverless"
+  engine            = aws_rds_cluster.aurora_cluster.engine
+  engine_version    = aws_rds_cluster.aurora_cluster.engine_version
+}
+
+# Actualizar el subnet group de Aurora para usar todas las subnets disponibles
+resource "aws_db_subnet_group" "aurora" {
+  name       = "aurora-subnet-group"
+  subnet_ids = data.aws_subnets.default.ids
+
+  tags = {
+    Name = "Aurora DB subnet group"
+  }
+}
+
+module "dms" {
+  source = "../../modules/dms"
+  
+  region                    = "us-west-2"
+  region_alias              = "usw2"
+  environment               = "prod"
+  business_unit             = "microservice"
+  account_id                = var.aws_account_id
+  
+}
+
+/* resource "aws_secretsmanager_secret" "rds_credentials_db" {
+  name = "rds-credentials-db-1"
+  description = "Credenciales para la base de datos Aurora PostgreSQL"
+  force_overwrite_replica_secret = true
+}
+
+resource "aws_secretsmanager_secret_version" "rds_credentials_db" {
+  secret_id = aws_secretsmanager_secret.rds_credentials_db.id
+  secret_string = jsonencode({
+    username = aws_rds_cluster.aurora_cluster.master_username
+    password = aws_rds_cluster.aurora_cluster.master_password
+    engine   = "postgres"
+    host     = aws_rds_cluster.aurora_cluster.endpoint
+    port     = 5432
+    dbname   = aws_rds_cluster.aurora_cluster.database_name
+  })
+} */
+
+module "rds_to_datalake" {
+  source = "../../modules/rds_to_datalake"
+  
+  region                    = "us-west-2"
+  region_alias              = "usw2"
+  environment               = "prod"
+  service                   = "microservice"
+  business_unit             = "microservice"
+  account_id                = var.aws_account_id
+  
+  # RDS Configuration
+  cluster                   = aws_rds_cluster.aurora_cluster.cluster_identifier
+  cluster_endpoint          = aws_rds_cluster.aurora_cluster.endpoint
+  database_name             = aws_rds_cluster.aurora_cluster.database_name
+  
+  # Secrets Manager ARN para las credenciales de RDS
+  secrets_manager_arn       ="arn-temp" #aws_secretsmanager_secret.rds_credentials_db.arn
+  
+  # DMS Instance ARN
+  replication_instance_arn  = module.dms.replication_instance_arn
+  
+  # Tags y compliance
+  compliance               = "none"
+}
+
+# Rol DMS para infraestructura (actualizado para coincidir con el nombre esperado)
+resource "aws_iam_role" "dms_infrastructure_role" {
+  name = "usw2-prod-infrastructure-dms-role"  # Nombre exacto que espera el endpoint
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = [
+            "dms.amazonaws.com",
+            "dms.us-west-2.amazonaws.com",  # Servicio regional para us-west-2
+            "dms.us-east-1.amazonaws.com"   # Servicio regional para us-east-1
+          ]
+        }
+      }
+    ]
+  })
+}
+
+# Política para el rol DMS
+resource "aws_iam_role_policy" "dms_infrastructure_policy" {
+  name = "dms-infrastructure-policy"
+  role = aws_iam_role.dms_infrastructure_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:*",
+          "s3:*",
+          "secretsmanager:*",
+          "kinesis:*"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kinesis:DescribeStream",
+          "kinesis:GetShardIterator",
+          "kinesis:GetRecords",
+          "kinesis:ListShards",
+          "kinesis:PutRecord",
+          "kinesis:PutRecords"
+        ],
+        Resource = module.rds_to_datalake.kinesis-stream-arn  # Referencia específica al ARN del stream
+      }
+    ]
+  })
+}
+
+resource "aws_rds_cluster_parameter_group" "demo_params" {
+  family      = "aurora-postgresql15"
+  name        = "demo-params"
+  description = "Parameter group for Aurora PostgreSQL cluster with logical replication enabled"
+
+  parameter {
+    name  = "rds.logical_replication"
+    value = "1"
+    apply_method = "pending-reboot"
+  }
+
+  tags = {
+    Name = "demo-params"
+  }
+}
+

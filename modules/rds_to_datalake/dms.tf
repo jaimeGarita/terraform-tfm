@@ -1,12 +1,15 @@
 resource "aws_dms_endpoint" "source-dms-endpoint" {
-  database_name                   = var.database_name
-  endpoint_id                     = "${var.region_alias}-${var.environment}-data-${var.service}-dlk-source"
-  endpoint_type                   = "source"
-  engine_name                     = "aurora-postgresql"
-  ssl_mode                        = "require"
-  secrets_manager_arn             = var.secrets_manager_arn
-  secrets_manager_access_role_arn = "arn:aws:iam::${var.account_id}:role/${var.region_alias}-${var.environment}-infrastructure-dms-role"
-  service_access_role             = "arn:aws:iam::${var.account_id}:role/${var.region_alias}-${var.environment}-infrastructure-dms-role"
+  endpoint_id   = "${var.region_alias}-${var.environment}-data-${var.service}-dlk-source"
+  endpoint_type = "source"
+  engine_name   = "aurora-postgresql"
+  
+  # Configuración básica para conectar con Aurora PostgreSQL
+  database_name = var.database_name
+  username      = "demouser"           # El mismo usuario que configuramos en el cluster Aurora
+  password      = "Demo1234!"          # La misma contraseña que configuramos en el cluster Aurora
+  server_name   = var.cluster_endpoint  # Cambiamos var.cluster por var.cluster_endpoint
+  port          = 5432                 # Puerto estándar de PostgreSQL
+  ssl_mode      = "none"         # Habilitar SSL para mayor seguridad
 }
 
 resource "aws_dms_endpoint" "target-dms-endpoint" {
@@ -23,11 +26,11 @@ resource "aws_dms_endpoint" "target-dms-endpoint" {
 
 resource "aws_dms_replication_task" "replication-task" {
   migration_type           = "full-load-and-cdc"
-  replication_instance_arn = var.replication_instance_arn
   replication_task_id      = "${var.region_alias}-${var.environment}-data-${var.service}-dlk-replication"
+  source_endpoint_arn      = aws_dms_endpoint.source-dms-endpoint.endpoint_arn
+  target_endpoint_arn      = aws_dms_endpoint.target-dms-endpoint.endpoint_arn
+  replication_instance_arn = var.replication_instance_arn
 
-  source_endpoint_arn = aws_dms_endpoint.source-dms-endpoint.endpoint_arn
-  target_endpoint_arn = aws_dms_endpoint.target-dms-endpoint.endpoint_arn
   lifecycle {
     ignore_changes = [replication_task_settings, table_mappings]
   }
